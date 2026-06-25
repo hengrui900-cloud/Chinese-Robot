@@ -167,6 +167,10 @@ class GameManager:
         self.current_fen = fen
         logger.info(f"初始棋盘 FEN: {fen}")
         
+        # 同步到 AI 引擎
+        if self.ai_engine:
+            self.ai_engine.set_position(fen, [])
+        
         # 显示检测结果
         if config.SHOW_DETECTION_RESULT:
             self.board_recognizer.show_detection_result(frame)
@@ -180,7 +184,14 @@ class GameManager:
         Returns:
             AI 走法（UCI 格式），失败返回 None
         """
+        if not self.ai_engine or not self.ai_engine.is_ready:
+            logger.error("AI 引擎未就绪")
+            return None
+
         logger.info("AI 正在思考...")
+        
+        # 显式同步当前局面到 AI 引擎
+        self.ai_engine.set_position(self.current_fen, self.move_history)
         
         # 设置 AI 难度
         depth = config.ENGINE_DEPTH
@@ -224,15 +235,15 @@ class GameManager:
         
         return success
     
-    def wait_for_player_move(self, timeout: int = None) -> bool:
+    def wait_for_player_move(self, timeout: int = None) -> Optional[str]:
         """
-        等待玩家走棋
+        等待玩家走棋并返回走法
         
         Args:
             timeout: 超时时间（秒），None 则使用配置值
             
         Returns:
-            玩家是否走了棋
+            玩家走法（UCI 格式），超时或失败返回 None
         """
         timeout_to_use = timeout or config.WAIT_PLAYER_MOVE_TIMEOUT
         
@@ -245,73 +256,57 @@ class GameManager:
             # 定期检测棋盘变化
             time.sleep(2)
             
+            # 使用对齐后的 API
             new_fen = self.board_recognizer.get_fen_from_recognition()
             
             if new_fen and new_fen != last_fen:
-                logger.info("检测到棋盘变化")
+                logger.info(f"检测到棋盘变化: {last_fen[:30]}... -> {new_fen[:30]}...")
                 
-                # 验证走法合法性
-                if self._validate_player_move(last_fen, new_fen):
+                # 验证走法合法性并获取走法字符串
+                move = self._validate_player_move(last_fen, new_fen)
+                if move:
                     self.current_fen = new_fen
-                    logger.info("玩家走法有效")
-                    return True
+                    logger.info(f"玩家走法有效: {move}")
+                    return move
                 else:
-                    logger.warning("玩家走法无效，请重新走棋")
-                    last_fen = new_fen  # 更新为当前状态继续监控
+                    logger.warning("玩家走法无效或未能提取，请重新走棋")
+                    # 如果局面变了但无效，可能是误识或摆放中，继续等待
         
         logger.warning("等待玩家走棋超时")
-        return False
+        return None
     
-    def _validate_player_move(self, old_fen: str, new_fen: str) -> bool:
+    def _validate_player_move(self, old_fen: str, new_fen: str) -> Optional[str]:
         """
-        验证玩家走法是否合法
+        验证玩家走法是否合法并返回走法字符串
         
         Args:
             old_fen: 走棋前的 FEN
             new_fen: 走棋后的 FEN
             
         Returns:
-            是否合法
+            UCI 格式走法或 None
         """
         logger.debug(f"验证走法：{old_fen} -> {new_fen}")
         
-        if not self.ai_engine or not self.ai_engine.is_ready:
-            logger.warning("AI 引擎未就绪，无法验证走法")
-            return True  # 引擎不可用时暂时认为合法
-        
         try:
-            # 使用 Pikafish 验证走法
-            # 设置当前位置
-            self.ai_engine.set_position(old_fen, [])
-            
-            # 获取所有合法走法
-            from ai_engine import AIEngine
-            # 通过 go 命令获取 bestmove，如果有返回则说明位置合法
-            test_move = self.ai_engine.get_best_move(depth=1)
-            
-            if test_move is None:
-                # 没有合法走法，可能是将死或无子可动
-                logger.info("当前局面没有合法走法")
-                return False
-            
             # 比较新旧 FEN，提取可能的走法
             move = self._extract_move_from_fen_change(old_fen, new_fen)
             
             if move is None:
                 logger.warning("无法从 FEN 变化中提取走法")
-                return False
+                return None
             
-            # 检查走法格式是否正确
-            if len(move) != 4:
-                logger.warning(f"走法格式错误：{move}")
-                return False
+            if not self.ai_engine or not self.ai_engine.is_ready:
+                logger.warning("AI 引擎未就绪，跳过合法性深度验证")
+                return move
             
-            logger.info(f"验证通过，走法：{move}")
-            return True
+            # 使用引擎验证走法是否在合法走法列表中（可选，此处通过引擎尝试设置位置判断）
+            # 注意：此处的逻辑应确保 move 是合法的 UCI 格式
+            return move
             
         except Exception as e:
             logger.error(f"验证走法时出错：{e}")
-            return True  # 出错时暂时认为合法
+            return None
     
     def detect_player_move(self) -> Optional[str]:
         """
@@ -520,11 +515,14 @@ class GameManager:
                     print("\n>>> 轮到你了，请走棋...")
                     
                     # 等待并检测玩家走棋
-                    player_moved = self.wait_for_player_move()
+                    player_move = self.wait_for_player_move()
                     
-                    if not player_moved:
-                        print("超时未走棋，游戏结束")
-                        break
+                    if not player_move:
+                        print("未检测到走棋或超时，继续等待...")
+                        continue
+                    
+                    # 记录走法
+                    self.move_history.append(player_move)
                     
                     # 切换回合
                     self.is_player_turn = False

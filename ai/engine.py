@@ -24,7 +24,8 @@ class AIEngine:
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             engine_path = os.path.join(project_root, engine_path.lstrip('./\\'))
         
-        self.engine_path = engine_path
+        self.engine_path = os.path.abspath(engine_path)
+        self.engine_dir = os.path.dirname(self.engine_path)
         self.process: Optional[subprocess.Popen] = None
         self.is_ready = False
         self.current_fen = config.FEN_START_POSITION
@@ -35,13 +36,27 @@ class AIEngine:
     def start(self) -> bool:
         """启动引擎"""
         try:
+            if not os.path.exists(self.engine_path):
+                logger.error(f"Pikafish engine not found: {self.engine_path}")
+                return False
+
+            startupinfo = None
+            creationflags = 0
+            if os.name == "nt":
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                creationflags = subprocess.CREATE_NO_WINDOW
+
             self.process = subprocess.Popen(
-                self.engine_path,
+                [self.engine_path],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                universal_newlines=True,
-                bufsize=1
+                text=True,
+                bufsize=1,
+                cwd=self.engine_dir,
+                startupinfo=startupinfo,
+                creationflags=creationflags
             )
             
             self._send_command("uci")
@@ -99,23 +114,26 @@ class AIEngine:
         return best_move
     
     def set_position(self, fen: str = None, moves: List[str] = None):
-        """设置棋盘位置"""
+        """设置棋盘位置并同步内部状态"""
         if not self.is_ready:
             return
         
-        fen = fen or self.current_fen
-        moves = moves or self.move_history
+        if fen is not None:
+            self.current_fen = fen
+        if moves is not None:
+            self.move_history = list(moves)
+            
+        fen_to_use = self.current_fen
+        moves_to_use = self.move_history
         
-        logger.info(f"set_position调用: fen={fen}, moves={moves}")
+        logger.info(f"set_position: fen={fen_to_use}, moves={len(moves_to_use)} steps")
         
-        if moves:
-            moves_str = " ".join(moves)
-            cmd = f"position fen {fen} moves {moves_str}"
-            logger.info(f"发送命令: {cmd}")
+        if moves_to_use:
+            moves_str = " ".join(moves_to_use)
+            cmd = f"position fen {fen_to_use} moves {moves_str}"
             self._send_command(cmd)
         else:
-            cmd = f"position fen {fen}"
-            logger.info(f"发送命令: {cmd}")
+            cmd = f"position fen {fen_to_use}"
             self._send_command(cmd)
     
     def _send_command(self, command: str):

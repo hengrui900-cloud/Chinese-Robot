@@ -1,117 +1,95 @@
 """
-棋盘检测器 - 基于ONNX模型的关键点检测和棋子分类
+High-level detector wrapper around the ONNX core detector.
 """
 
-import os
-import time
 import logging
+import threading
+from typing import Optional, Tuple
+
 import numpy as np
-import cv2
-from typing import Tuple, Optional, Union
 
 logger = logging.getLogger(__name__)
 
 
 class ChessboardDetector:
     """
-    棋盘检测器 - 使用ONNX模型进行关键点检测和棋子分类
-    
-    工作流程:
-    1. 检测棋盘关键点 (RTMPose模型)
-    2. 透视变换拉伸棋盘
-    3. 棋子分类 (Full Classifier模型)
+    Detect board corners and classify the full 10x9 xiangqi board.
+
+    The ONNX sessions must be loaded once and reused. Recreating them for every
+    dynamic recognition poll is extremely expensive, especially on CUDA.
     """
-    
+
     def __init__(self, pose_model_path: str, classifier_model_path: str):
-        """
-        初始化检测器
-        
-        Args:
-            pose_model_path: 姿态估计模型路径
-            classifier_model_path: 棋子分类模型路径
-        """
         self.pose_model_path = pose_model_path
         self.classifier_model_path = classifier_model_path
-        
-        # 延迟加载模型
+        self._core_detector = None
         self._pose_model = None
         self._classifier_model = None
-        
-        logger.info(f"棋盘检测器初始化")
-        logger.info(f"  姿态模型: {pose_model_path}")
-        logger.info(f"  分类模型: {classifier_model_path}")
-    
+        self._runtime_lock = threading.RLock()
+
+        logger.info("ChessboardDetector init")
+        logger.info("  pose model: %s", pose_model_path)
+        logger.info("  classifier model: %s", classifier_model_path)
+
     def _load_models(self):
-        """懒加载ONNX模型"""
-        if self._pose_model is None or self._classifier_model is None:
+        if self._core_detector is not None:
+            return
+
+        with self._runtime_lock:
+            if self._core_detector is not None:
+                return
+
             try:
                 from core.chessboard_detector import ChessboardDetector as CoreDetector
-                
+
                 self._core_detector = CoreDetector(
                     pose_model_path=self.pose_model_path,
-                    full_classifier_model_path=self.classifier_model_path
+                    full_classifier_model_path=self.classifier_model_path,
                 )
-                logger.info("ONNX模型加载成功")
-                
-            except Exception as e:
-                logger.error(f"加载ONNX模型失败: {e}", exc_info=True)
-                raise RuntimeError(f"无法加载ONNX模型: {e}")
-    
-    def detect_and_classify(self, image_rgb: np.ndarray) -> Tuple[
-        Optional[np.ndarray],  # 带关键点的原图
-        Optional[np.ndarray],  # 拉伸后的棋盘
-        Optional[str],         # 棋子布局字符串
-        Optional[list],        # 置信度分数
-        str                    # 时间信息
+                self._pose_model = self._core_detector.pose
+                self._classifier_model = self._core_detector.full_classifier
+                logger.info("ONNX models loaded")
+            except Exception as exc:
+                logger.error("Load ONNX models failed: %s", exc, exc_info=True)
+                raise RuntimeError(f"Cannot load ONNX models: {exc}")
+
+    def reset_board_cache(self):
+        if self._core_detector is not None and hasattr(self._core_detector, "reset_board_cache"):
+            self._core_detector.reset_board_cache()
+
+    def detect_and_classify(self, image_rgb: np.ndarray, draw_debug: bool = False) -> Tuple[
+        Optional[np.ndarray],
+        Optional[np.ndarray],
+        Optional[str],
+        Optional[list],
+        str,
     ]:
-        """
-        检测棋盘并分类棋子
-        
-        Args:
-            image_rgb: RGB格式输入图像
-            
-        Returns:
-            (原图关键点, 拉伸棋盘, 布局字符串, 置信度, 时间信息)
-        """
         self._load_models()
-        
+
         if image_rgb is None:
             return None, None, None, None, ""
-        
-        try:
-            # 调用核心检测器
-            result = self._core_detector.pred_detect_board_and_classifier(image_rgb)
-            return result
-            
-        except Exception as e:
-            logger.error(f"检测失败: {e}", exc_info=True)
-            return None, None, None, None, f"错误: {e}"
-    
+
+        with self._runtime_lock:
+            try:
+                return self._core_detector.pred_detect_board_and_classifier(
+                    image_rgb,
+                    draw_debug=draw_debug,
+                )
+            except Exception as exc:
+                logger.error("Detect/classify failed: %s", exc, exc_info=True)
+                return None, None, None, None, f"error: {exc}"
+
     def parse_layout_string(self, layout_str: str) -> dict:
-        """
-        解析布局字符串为棋盘状态字典
-        
-        Args:
-            layout_str: 布局字符串 (如 "rnbakabnr\n.........\n...")
-            
-        Returns:
-            棋盘状态字典 {(col, row): piece_char}  # 返回棋子字符，不是'red'/'black'
-        """
         if not layout_str:
             return {}
-        
+
         board_state = {}
-        rows = layout_str.strip().split('\n')
-        
+        rows = layout_str.strip().split("\n")
         for row_idx, row_str in enumerate(rows):
             if len(row_str) != 9:
                 continue
-            
             for col_idx, char in enumerate(row_str):
-                if char == '.' or char == 'x':
+                if char in (".", "x"):
                     continue
-                
-                # 直接返回棋子字符（大写=红方，小写=黑方）
                 board_state[(col_idx, row_idx)] = char
-        
         return board_state

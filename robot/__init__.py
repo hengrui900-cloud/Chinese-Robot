@@ -3,6 +3,27 @@
 """
 
 from .controller import RobotController
-from .tcp_client import RobotTCPClient, RobotCommandType, RobotResponseCode
+from .protocol import (
+    BoardToArmConfig,
+    RobotArmCommand,
+    RobotHomingCommand,
+    RobotPersistentClient,
+    RobotSendResult,
+    probe_robot_connection,
+    send_homing_command,
+    send_robot_command,
+    uci_to_arm_command,
+)
 
-__all__ = ['RobotController', 'RobotTCPClient', 'RobotCommandType', 'RobotResponseCode']
+__all__ = [
+    'BoardToArmConfig',
+    'RobotArmCommand',
+    'RobotHomingCommand',
+    'RobotPersistentClient',
+    'RobotController',
+    'RobotSendResult',
+    'probe_robot_connection',
+    'send_homing_command',
+    'send_robot_command',
+    'uci_to_arm_command',
+]

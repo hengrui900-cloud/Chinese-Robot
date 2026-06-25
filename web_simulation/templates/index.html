@@ -3,140 +3,144 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>中国象棋Web仿真环境</title>
+    <title>中国象棋 Web 识别对弈台</title>
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
-    <div class="container">
-        <!-- 标题栏 -->
+    <div class="app-shell">
         <header class="header">
-            <h1>♟️ 中国象棋Web仿真环境</h1>
+            <div class="brand">
+                <span class="brand-mark">棋</span>
+                <div>
+                    <h1>中国象棋 Web 识别对弈台</h1>
+                    <p>真实棋盘识别 · AI 决策 · 对局状态监控</p>
+                </div>
+            </div>
             <div class="status-bar">
                 <span id="connection-status" class="status-indicator disconnected">● 未连接</span>
-                <span id="game-status">等待开始</span>
+                <span id="game-status" class="game-status">等待开始</span>
             </div>
         </header>
 
-        <!-- 主内容区 -->
         <main class="main-content">
-            <!-- 左侧：摄像头和棋盘 -->
-            <section class="left-panel">
-                <div class="camera-section">
-                    <h2>📷 摄像头画面</h2>
-                    
-                    <!-- 输入源选择 -->
-                    <div class="input-source-selector">
-                        <label>输入源:</label>
+            <aside class="control-panel panel">
+                <section class="panel-section">
+                    <h2>对局控制</h2>
+                    <div class="field-stack">
+                        <label for="ai-color">程序执色</label>
+                        <select id="ai-color">
+                            <option value="black">黑方</option>
+                        </select>
+                    </div>
+                    <div class="field-stack">
+                        <label for="first-player">先手方</label>
+                        <select id="first-player">
+                            <option value="red">红方先手</option>
+                            <option value="black">黑方先手</option>
+                        </select>
+                    </div>
+                    <div class="control-buttons">
+                        <button id="btn-start-hardware-game" class="btn btn-primary btn-large">正式使用（连接下位机）</button>
+                        <button id="btn-start-simulation-game" class="btn btn-secondary btn-large">模拟测试（无下位机）</button>
+                        <button id="btn-reset-game" class="btn btn-warning btn-large">重置游戏</button>
+                    </div>
+                </section>
+
+                <section class="panel-section">
+                    <h2>AI 设置</h2>
+                    <div class="field-stack">
+                        <label for="ai-depth">搜索深度</label>
+                        <input type="number" id="ai-depth" value="8" min="1" max="30">
+                    </div>
+                    <button id="btn-ai-move" class="btn btn-success">获取 AI 走法</button>
+                </section>
+
+                <section class="panel-section source-section">
+                    <h2>画面输入</h2>
+                    <div class="field-stack">
+                        <label for="input-source">输入源</label>
                         <select id="input-source" onchange="changeInputSource()">
-                            <option value="camera">本地摄像头</option>
+                            <option value="camera:1">USB 摄像头（索引 1）</option>
                             <option value="network">网络摄像头</option>
                             <option value="local">本地图片</option>
                         </select>
                     </div>
-                    
-                    <!-- 网络摄像头URL输入 -->
                     <div id="network-camera-input" class="input-group" style="display: none;">
-                        <input type="text" id="network-camera-url" placeholder="输入网络摄像头URL (如: http://192.168.1.100:8080/video)">
-                        <button id="btn-connect-network" class="btn btn-primary">连接</button>
+                        <input type="text" id="network-camera-url" placeholder="http://192.168.1.23:8080 或 rtsp://192.168.1.23:8554/cam">
+                        <button id="btn-connect-network" class="btn btn-secondary">连接</button>
                     </div>
-                    
-                    <!-- 本地图片上传 -->
                     <div id="local-image-input" class="input-group" style="display: none;">
                         <input type="file" id="local-image-file" accept="image/*" onchange="handleLocalImageUpload(event)">
                     </div>
-                    
+                </section>
+            </aside>
+
+            <section class="vision-panel">
+                <article class="panel camera-section">
+                    <div class="section-heading">
+                        <div>
+                            <h2>真实画面</h2>
+                            <p>开始游戏后自动进入动态识别</p>
+                        </div>
+                        <span class="live-chip">CAMERA</span>
+                    </div>
                     <div class="camera-container">
-                        <img id="camera-feed" src="" alt="摄像头画面">
+                        <img id="camera-feed" src="" alt="摄像头画面" style="display: none;">
+                        <canvas id="camera-view" width="640" height="480"></canvas>
                         <canvas id="board-canvas" width="450" height="500"></canvas>
                     </div>
-                    <div class="camera-controls">
-                        <button id="btn-capture" class="btn btn-primary">捕获图像</button>
-                        <button id="btn-recognize" class="btn btn-success">识别棋盘</button>
+                    <div class="hidden-controls" aria-hidden="true">
+                        <button id="btn-capture" class="btn btn-secondary" style="display: none;">捕获图像</button>
+                        <button id="btn-recognize" class="btn btn-success" style="display: none;">开始识别</button>
                     </div>
-                </div>
+                </article>
 
-                <div class="board-info">
-                    <h3>棋盘状态</h3>
-                    <div class="info-item">
-                        <label>FEN串:</label>
-                        <input type="text" id="fen-display" readonly>
+                <article class="panel virtual-section">
+                    <div class="section-heading">
+                        <div>
+                            <h2>虚拟识别画面</h2>
+                            <p>识别后的棋盘状态会同步在这里</p>
+                        </div>
+                        <div class="piece-counter">
+                            <span>棋子数量</span>
+                            <strong id="piece-count">0</strong>
+                        </div>
                     </div>
-                    <div class="info-item">
-                        <label>棋子数量:</label>
-                        <span id="piece-count">0</span>
-                    </div>
-                    
-                    <!-- 可视化棋盘 -->
+                    <input type="text" id="fen-display" readonly aria-label="FEN" class="fen-hidden">
                     <div class="visual-board-container">
-                        <canvas id="visual-board" width="360" height="400"></canvas>
+                        <canvas id="visual-board" width="520" height="580"></canvas>
                     </div>
-                </div>
+                </article>
             </section>
 
-            <!-- 中间：游戏控制 -->
-            <section class="center-panel">
-                <div class="game-control">
-                    <h2>🎮 游戏控制</h2>
-                    <div class="control-buttons">
-                        <button id="btn-start-game" class="btn btn-large btn-primary">开始游戏</button>
-                        <button id="btn-reset-game" class="btn btn-large btn-warning">重置游戏</button>
+            <aside class="info-panel">
+                <section class="panel move-history">
+                    <div class="section-heading compact">
+                        <h2>走法历史</h2>
                     </div>
-                    
-                    <div class="ai-settings">
-                        <h3>AI设置</h3>
-                        <div class="setting-item">
-                            <label>搜索深度:</label>
-                            <input type="number" id="ai-depth" value="15" min="1" max="30">
-                        </div>
-                        <button id="btn-ai-move" class="btn btn-success">获取AI走法</button>
-                    </div>
+                    <div id="move-list" class="move-list"></div>
+                </section>
 
-                    <div class="move-history">
-                        <h3>走法历史</h3>
-                        <div id="move-list" class="move-list"></div>
+                <section class="panel analysis-panel">
+                    <div class="section-heading compact">
+                        <h2>AI 分析</h2>
                     </div>
-                </div>
-            </section>
-
-            <!-- 右侧：机械臂模拟 -->
-            <section class="right-panel">
-                <div class="robot-section">
-                    <h2>🤖 机械臂模拟</h2>
-                    <div class="robot-visualization">
-                        <canvas id="robot-canvas" width="400" height="400"></canvas>
-                    </div>
-                    <div class="robot-controls">
-                        <button id="btn-simulate-move" class="btn btn-primary">执行走法</button>
-                        <button id="btn-test-sequence" class="btn btn-secondary">测试序列</button>
-                    </div>
-                    <div class="robot-status">
-                        <div class="status-item">
-                            <label>状态:</label>
-                            <span id="robot-state">空闲</span>
-                        </div>
-                        <div class="status-item">
-                            <label>当前位置:</label>
-                            <span id="robot-position">(0, 0, 0)</span>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="analysis-panel">
-                    <h3>AI分析</h3>
                     <div id="ai-analysis" class="analysis-content">
-                        <p>等待AI分析...</p>
+                        <p>等待 AI 分析...</p>
                     </div>
-                </div>
-            </section>
-        </main>
+                </section>
 
-        <!-- 日志控制台 -->
-        <footer class="log-console">
-            <h3>📋 系统日志</h3>
-            <div id="log-output" class="log-output"></div>
-        </footer>
+                <section class="panel log-console">
+                    <div class="section-heading compact">
+                        <h2>系统日志</h2>
+                        <button id="btn-toggle-log-pause" class="btn btn-secondary btn-small">暂停日志</button>
+                    </div>
+                    <div id="log-output" class="log-output"></div>
+                </section>
+            </aside>
+        </main>
     </div>
 
-    <script src="/static/js/app.js"></script>
+    <script src="/static/js/app.js?v=robot-ack-resume-20260625"></script>
 </body>
 </html>

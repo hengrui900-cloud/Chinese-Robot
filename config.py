@@ -3,14 +3,10 @@
 """
 
 # ============= 摄像头配置 =============
-CAMERA_INDEX = 0              # 摄像头索引（0 为默认摄像头）
-CAMERA_WIDTH = 1280           # 摄像头宽度
-CAMERA_HEIGHT = 720           # 摄像头高度
-CAMERA_FPS = 30               # 帧率
-
-# 网络摄像头配置（香橙派）
-USE_NETWORK_CAMERA = False    # 是否使用网络摄像头
-NETWORK_CAMERA_URL = "ws://192.168.1.100:8765"  # 香橙派WebSocket地址
+CAMERA_INDEX = 1              # 摄像头索引（1 为外接 USB 摄像头）
+CAMERA_WIDTH = 640            # USB preview/recognition default width
+CAMERA_HEIGHT = 480           # USB preview/recognition default height
+CAMERA_FPS = 30               # 帧率保持不变
 
 # ============= 棋盘识别配置 =============
 BOARD_ROWS = 10               # 棋盘行数
@@ -52,6 +48,24 @@ HASH_SIZE_MB = 128                   # 哈希表大小（MB）
 
 # ============= 机械臂配置 =============
 ROBOT_TYPE = "simulation"   # 机械臂类型："simulation", "dobot", "elephant_robotics"
+ROBOT_NETWORK_HOST = "192.168.0.102"
+ROBOT_NETWORK_PORT = 8086
+ROBOT_NETWORK_TIMEOUT = 1.0
+ROBOT_HOMING_TIMEOUT = 30.0
+ROBOT_COMMAND_TIMEOUT = 60.0
+ROBOT_NORMAL_COMMAND_TIMEOUT = 60.0
+ROBOT_CAPTURE_COMMAND_TIMEOUT = 120.0
+ROBOT_CAPTURE_SETTLE_SECONDS = 0.0
+ROBOT_NORMAL_SETTLE_SECONDS = 0.0
+ROBOT_POST_BASELINE_GUARD_SECONDS = 0.0
+ROBOT_HOMING_M1_ANGLE_DEG = -17.1848
+ROBOT_HOMING_M2_ANGLE_DEG = -55.6304
+ROBOT_COMMAND_ORIGIN_X = 0
+ROBOT_COMMAND_ORIGIN_Y = 0
+ROBOT_COMMAND_FILE_SPACING_MM = 34
+ROBOT_COMMAND_RANK_SPACING_MM = 30
+ROBOT_COMMAND_RIVER_SPACING_MM = 32
+ROBOT_SIMULATED_MOVE_SECONDS = 15.0
 
 # 机械臂 home 点坐标（毫米）
 HOME_POSITION_X = 100
@@ -91,9 +105,10 @@ BOARD_TOP_LEFT_Z = 0
 # 棋盘旋转角度（度）
 BOARD_ROTATION_ANGLE = 0
 
+# ============= 网络配置（如果使用网络摄像头） =============
+USE_IP_CAMERA = True          # 修改为 True
+IP_CAMERA_URL = "http://192.168.0.101:8080/?action=stream"  # 修改为您香橙派的实际 IP 和 stream 参数
+
+
 # ============= 备用配置 =============
 FEN_START_POSITION = "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"
-
-# ============= 已废弃配置 =============
-# USE_IP_CAMERA = False  # 已废弃，改用 USE_NETWORK_CAMERA
-# IP_CAMERA_URL = "http://192.168.1.100:8080/video"  # 已废弃

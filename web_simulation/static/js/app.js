@@ -6,42 +6,70 @@ class ChessSimulation {
         this.currentState = null;
         this.moveHistory = [];
         this.currentInputSource = 'camera'; // 当前输入源
+        this.selectedCameraIndex = 1;
+        this.selectedCameraIndex = 1;
         this.networkCameraUrl = '';
         this.localImageBase64 = null;
         this.boardState = {}; // 用于可视化棋盘的状态 {"col,row": "piece_char"}
         this.selectedSquare = null; // 当前选中的格子
         this.playerColor = 'red'; // 玩家执红
         this.aiColor = 'black';   // AI执黑
+        this.firstPlayer = 'red'; // 默认红方先手
+        this.playerColor = 'red';
+        this.isGameRunning = false;
         this.isPlayerTurn = true; // 是否轮到玩家
         this.useManualBoardState = false; // 是否使用手动维护的棋盘状态
+        this.dynamicRecognizeTimer = null;
+        this.dynamicRecognizeTimer = null;
+        this.dynamicRecognizeBusy = false;
+        this.dynamicRecognitionEnabled = false;
+        this.dynamicRecognizeIntervalMs = 250;
+        this.cameraFrameTimer = null;
+        this.cameraFrameBusy = false;
+        this.cameraFrameIntervalMs = 70;
+        this.lastCameraFrameErrorAt = 0;
+        this.lastAiBestMoveHandled = null;
+        this.lastAiBoardApplied = null;
+        this.robotResumeTimer = null;
+        this.robotPauseMs = 15000;
+        this.lastDynamicEvent = '';
+        this.logPaused = false;
+        this.pausedLogCount = 0;
         this.init();
     }
 
-    init() {
-        this.log('系统初始化...', 'info');
+    async init() {
         this.bindEvents();
-        this.checkConnection();
+        this.log('系统初始化...', 'info');
+        await this.checkConnection();
+        await this.loadLocalCameras();
         this.updateStatus();
     }
 
     // 绑定事件
     bindEvents() {
-        document.getElementById('btn-capture').addEventListener('click', () => this.captureImage());
-        document.getElementById('btn-recognize').addEventListener('click', () => this.recognizeBoard());
-        document.getElementById('btn-start-game').addEventListener('click', () => this.startGame());
-        document.getElementById('btn-reset-game').addEventListener('click', () => this.resetGame());
-        document.getElementById('btn-ai-move').addEventListener('click', () => this.getAIMove());
-        document.getElementById('btn-simulate-move').addEventListener('click', () => this.simulateRobotMove());
-        document.getElementById('btn-test-sequence').addEventListener('click', () => this.testRobotSequence());
+        const bind = (id, event, handler) => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener(event, handler);
+        };
+
+        bind('btn-capture', 'click', () => this.captureImage());
+        bind('btn-recognize', 'click', () => this.toggleRecognition());
+        bind('btn-start-hardware-game', 'click', () => this.startHardwareGame());
+        bind('btn-start-simulation-game', 'click', () => this.startSimulationGame());
+        bind('btn-reset-game', 'click', () => this.resetGame());
+        bind('btn-ai-move', 'click', () => this.getAIMove());
+        bind('btn-simulate-move', 'click', () => this.simulateRobotMove());
+        bind('btn-test-sequence', 'click', () => this.testRobotSequence());
+        bind('btn-toggle-log-pause', 'click', () => this.toggleLogPause());
         
         // 网络摄像头连接按钮
-        document.getElementById('btn-connect-network').addEventListener('click', () => this.connectNetworkCamera());
+        bind('btn-connect-network', 'click', () => this.connectNetworkCamera());
         
         // 可视化棋盘点击事件
-        document.getElementById('visual-board').addEventListener('click', (e) => this.handleBoardClick(e));
+        bind('visual-board', 'click', (e) => this.handleBoardClick(e));
         
-        // 定期检查摄像头状态
-        setInterval(() => this.checkCameraStatus(), 5000);
+        // 本地摄像头由实时视频流按需启动，避免后台轮询反复抢占设备。
     }
     
     // 启用/禁用识别按钮
@@ -58,10 +86,104 @@ class ChessSimulation {
         }
     }
 
+    setGameSettingControlsEnabled(enabled) {
+        ['ai-color', 'first-player'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.disabled = !enabled;
+        });
+    }
+
+    getGameSettings() {
+        const aiColor = document.getElementById('ai-color')?.value || 'black';
+        const firstPlayer = document.getElementById('first-player')?.value || 'red';
+        return {
+            aiColor,
+            playerColor: aiColor === 'red' ? 'black' : 'red',
+            firstPlayer
+        };
+    }
+
+    colorName(color) {
+        return color === 'red' ? '红方' : '黑方';
+    }
+
+    turnCharToColor(turnChar) {
+        return turnChar === 'w' ? 'red' : 'black';
+    }
+
+    currentTurnFromFen(fen) {
+        const parts = (fen || '').split(' ');
+        return this.turnCharToColor(parts[1] || 'w');
+    }
+
+    // 加载本地摄像头列表
+    async loadLocalCameras() {
+        const select = document.getElementById('input-source');
+
+        try {
+            const response = await fetch(`${this.apiBase}/cameras`);
+            const data = await response.json();
+            const cameras = data.success ? data.cameras : [];
+            const selectedValue = select.dataset.loaded === 'true'
+                ? select.value
+                : `camera:${data.current_camera_index ?? this.selectedCameraIndex}`;
+
+            select.innerHTML = '';
+
+            if (cameras.length > 0) {
+                cameras.forEach((camera) => {
+                    const option = document.createElement('option');
+                    option.value = `camera:${camera.index}`;
+                    const size = camera.width && camera.height ? ` (${camera.width}x${camera.height})` : '';
+                    option.textContent = `${camera.label}${size}`;
+                    select.appendChild(option);
+                });
+                this.log(`检测到 ${cameras.length} 个本地摄像头`, 'info');
+            } else {
+                const option = document.createElement('option');
+                option.value = `camera:${this.selectedCameraIndex}`;
+                option.textContent = `本地摄像头 ${this.selectedCameraIndex}`;
+                select.appendChild(option);
+                this.log('未检测到可用摄像头，保留默认摄像头 0', 'warning');
+            }
+
+            const networkOption = document.createElement('option');
+            networkOption.value = 'network';
+            networkOption.textContent = '网络摄像头';
+            select.appendChild(networkOption);
+
+            const localOption = document.createElement('option');
+            localOption.value = 'local';
+            localOption.textContent = '本地图片';
+            select.appendChild(localOption);
+
+            if ([...select.options].some((option) => option.value === selectedValue)) {
+                select.value = selectedValue;
+            } else {
+                const usbOption = [...select.options].find((option) => option.value === `camera:${this.selectedCameraIndex}`);
+                const localOptions = [...select.options].filter((option) => option.value.startsWith('camera:'));
+                if (usbOption) select.value = usbOption.value;
+                else if (localOptions.length > 0) select.value = localOptions[0].value;
+            }
+
+            select.dataset.loaded = 'true';
+            this.changeInputSource();
+        } catch (error) {
+            this.log(`加载摄像头列表失败: ${error.message}`, 'error');
+        }
+    }
+
     // 切换输入源
     changeInputSource() {
         const source = document.getElementById('input-source').value;
-        this.currentInputSource = source;
+        const img = document.getElementById('camera-feed');
+        if (source.startsWith('camera:')) {
+            this.currentInputSource = 'camera';
+            this.selectedCameraIndex = parseInt(source.split(':')[1], 10);
+            if (Number.isNaN(this.selectedCameraIndex)) this.selectedCameraIndex = 1;
+        } else {
+            this.currentInputSource = source;
+        }
         
         // 隐藏所有输入组
         document.getElementById('network-camera-input').style.display = 'none';
@@ -70,12 +192,274 @@ class ChessSimulation {
         // 显示对应的输入组
         if (source === 'network') {
             document.getElementById('network-camera-input').style.display = 'flex';
+            if (this.networkCameraUrl) {
+                this.startLocalCameraStream();
+            } else {
+                this.stopLocalCameraFrames();
+                img.src = '';
+            }
+            this.stopDynamicRecognition();
+            this.setRecognitionMode(false);
             this.log('切换到网络摄像头模式', 'info');
         } else if (source === 'local') {
             document.getElementById('local-image-input').style.display = 'flex';
+            this.stopLocalCameraFrames();
+            img.src = this.localImageBase64 || '';
+            this.stopDynamicRecognition();
+            this.setRecognitionMode(false);
             this.log('切换到本地图片模式', 'info');
         } else {
-            this.log('切换到本地摄像头模式', 'info');
+            this.log(`切换到本地摄像头 ${this.selectedCameraIndex}`, 'info');
+            this.startLocalCameraStream();
+            this.stopDynamicRecognition();
+            this.setRecognitionMode(false);
+            this.log('实时画面已打开。摆好棋后点击“开始识别”。', 'info');
+        }
+    }
+
+    // 显示本地或网络摄像头实时画面
+    startLocalCameraStream() {
+        this.stopLocalCameraFrames();
+        const img = document.getElementById('camera-feed');
+        const canvas = document.getElementById('camera-view');
+        if (canvas) canvas.style.display = 'block';
+        if (img) {
+            img.style.display = 'none';
+            img.onload = null;
+            img.onerror = () => {
+                this.log(`${this.currentInputSource === 'network' ? '网络摄像头' : `本地摄像头 ${this.selectedCameraIndex}`} 视频流连接中断，正在等待后端自动恢复`, 'warning');
+            };
+            img.onerror = null;
+            img.src = '';
+        }
+        this.cameraFrameTimer = setInterval(() => this.refreshCameraFrame(), this.cameraFrameIntervalMs);
+        this.refreshCameraFrame();
+    }
+
+    stopLocalCameraFrames() {
+        if (this.cameraFrameTimer) {
+            clearInterval(this.cameraFrameTimer);
+            this.cameraFrameTimer = null;
+        }
+        this.cameraFrameBusy = false;
+        const img = document.getElementById('camera-feed');
+        if (img && (this.currentInputSource === 'camera' || this.currentInputSource === 'network')) {
+            img.src = '';
+        }
+    }
+
+    cameraRequestPayload() {
+        if (this.currentInputSource === 'network') {
+            return { camera_source: 'network' };
+        }
+        return { camera_index: this.selectedCameraIndex };
+    }
+
+    cameraFrameQuery() {
+        if (this.currentInputSource === 'network') {
+            return `camera_source=network`;
+        }
+        return `camera_index=${this.selectedCameraIndex}`;
+    }
+
+    refreshCameraFrame() {
+        if (!['camera', 'network'].includes(this.currentInputSource) || this.cameraFrameBusy) {
+            return;
+        }
+
+        this.cameraFrameBusy = true;
+        const img = new Image();
+        const canvas = document.getElementById('camera-view');
+        const frameUrl = `${this.apiBase}/camera/frame?${this.cameraFrameQuery()}&t=${Date.now()}`;
+
+        img.onload = () => {
+            if (canvas) {
+                const ctx = canvas.getContext('2d');
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                const scale = Math.min(canvas.width / img.naturalWidth, canvas.height / img.naturalHeight);
+                const drawWidth = img.naturalWidth * scale;
+                const drawHeight = img.naturalHeight * scale;
+                const x = (canvas.width - drawWidth) / 2;
+                const y = (canvas.height - drawHeight) / 2;
+                ctx.drawImage(img, x, y, drawWidth, drawHeight);
+            }
+            this.cameraFrameBusy = false;
+        };
+        img.onerror = () => {
+            this.cameraFrameBusy = false;
+            this.log(`${this.currentInputSource === 'network' ? '网络摄像头' : `本地摄像头 ${this.selectedCameraIndex}`} 实时画面加载失败`, 'error');
+        };
+        img.src = frameUrl;
+    }
+
+    pauseForRobotMove(durationMs = this.robotPauseMs, options = {}) {
+        const autoResume = options.autoResume !== false;
+        this.stopDynamicRecognition();
+        this.stopLocalCameraFrames();
+        this.setRecognitionMode(false);
+
+        if (this.robotResumeTimer) {
+            clearTimeout(this.robotResumeTimer);
+            this.robotResumeTimer = null;
+        }
+
+        if (!autoResume) {
+            this.log('AI已给出走法，暂停摄像头采集与动态识别，等待下位机回传 STATE:5,RESULT:1...', 'warning');
+            return;
+        }
+
+        this.log(`AI已给出走法，暂停摄像头采集与动态识别 ${Math.round(durationMs / 1000)} 秒，等待机械臂执行完成...`, 'warning');
+        this.robotResumeTimer = setTimeout(() => {
+            this.robotResumeTimer = null;
+            this.resumeRecognitionAfterRobotAck(false);
+        }, durationMs);
+    }
+
+    resumeRecognitionAfterRobotAck(fromController = true) {
+        if (this.robotResumeTimer) {
+            clearTimeout(this.robotResumeTimer);
+            this.robotResumeTimer = null;
+        }
+
+        if (['camera', 'network'].includes(this.currentInputSource)) {
+            this.startLocalCameraStream();
+        }
+        if (this.isGameRunning && ['camera', 'network'].includes(this.currentInputSource)) {
+            this.setRecognitionMode(true);
+            this.startDynamicRecognition();
+            this.log(
+                fromController
+                    ? '已收到下位机 STATE:5,RESULT:1，恢复红方走子识别'
+                    : '机械臂执行暂停结束，恢复红方走子识别',
+                'info'
+            );
+        }
+    }
+
+    setRecognitionMode(enabled) {
+        this.dynamicRecognitionEnabled = enabled;
+        const btn = document.getElementById('btn-recognize');
+        if (btn) {
+            btn.textContent = enabled ? '停止识别' : '开始识别';
+            btn.classList.toggle('btn-warning', enabled);
+            btn.classList.toggle('btn-success', !enabled);
+        }
+        const canvas = document.getElementById('board-canvas');
+        if (canvas && !enabled) {
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+    }
+
+    toggleRecognition() {
+        if (!['camera', 'network'].includes(this.currentInputSource)) {
+            this.recognizeBoard();
+            return;
+        }
+
+        if (this.dynamicRecognitionEnabled) {
+            this.stopDynamicRecognition();
+            this.setRecognitionMode(false);
+            this.log('识别已停止，保留实时摄像头画面', 'info');
+        } else {
+            this.setRecognitionMode(true);
+            this.startDynamicRecognition();
+        }
+    }
+
+    // 自动动态识别当前摄像头画面
+    startDynamicRecognition() {
+        this.stopDynamicRecognition();
+        this.lastDynamicEvent = '';
+        this.dynamicRecognizeTimer = setInterval(() => this.pollDynamicRecognition(), this.dynamicRecognizeIntervalMs);
+        this.pollDynamicRecognition();
+        this.log('动态识别已启动，等待棋盘稳定...', 'info');
+    }
+
+    stopDynamicRecognition() {
+        if (this.dynamicRecognizeTimer) {
+            clearInterval(this.dynamicRecognizeTimer);
+            this.dynamicRecognizeTimer = null;
+        }
+        this.dynamicRecognizeBusy = false;
+    }
+
+    async pollDynamicRecognition() {
+        if (!this.dynamicRecognitionEnabled || !['camera', 'network'].includes(this.currentInputSource) || this.dynamicRecognizeBusy) {
+            return;
+        }
+
+        this.dynamicRecognizeBusy = true;
+        try {
+            const response = await fetch(`${this.apiBase}/recognize/dynamic`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(this.cameraRequestPayload())
+            });
+
+            const data = await response.json();
+            if (!data.success) {
+                if (this.lastDynamicEvent !== 'error') {
+                    this.log(`动态识别失败: ${data.error}`, 'error');
+                    this.lastDynamicEvent = 'error';
+                }
+                return;
+            }
+
+            const recognizedPieceCount = data.recognized_piece_count ?? data.piece_count ?? 0;
+            const eventKey = `${data.event}:${data.message}:${recognizedPieceCount}`;
+            if (data.event !== 'unchanged' && eventKey !== this.lastDynamicEvent) {
+                this.log(`动态识别: ${data.message || data.event}（${recognizedPieceCount}子）`, data.stable ? 'info' : 'warning');
+                this.lastDynamicEvent = eventKey;
+            }
+
+            if (data.event === 'paused') {
+                return;
+            }
+
+            if (data.stable && data.board_state && Object.keys(data.board_state).length > 0) {
+                this.isGameRunning = Boolean(data.is_game_running);
+                if (data.ai_color) this.aiColor = data.ai_color;
+                if (data.player_color) this.playerColor = data.player_color;
+                if (data.first_player) this.firstPlayer = data.first_player;
+
+                this.boardState = data.board_state;
+                if (data.current_fen || data.fen) {
+                    document.getElementById('fen-display').value = data.current_fen || data.fen;
+                }
+                document.getElementById('piece-count').textContent = data.piece_count || 0;
+                this.drawVisualBoard();
+                this.drawBoard(data.board_state);
+
+                if (data.event === 'move' && data.move) {
+                    this.log(`自动检测到走子: ${data.move.code}`, 'info');
+                    
+                    // 强制同步后端状态到前端
+                    if (data.display_history) this.moveHistory = data.display_history;
+                    else if (data.move_history) this.moveHistory = data.move_history;
+                    this.updateMoveList();
+                    if (data.current_fen) document.getElementById('fen-display').value = data.current_fen;
+                    
+                    if (data.move.source === 'ai_confirmed') {
+                        this.log('已确认机械臂完成AI落子，等待红方下一步', 'info');
+                    } else if (data.move.source === 'player') {
+                        // 红方走完后才触发AI；AI/机械臂确认不会再次触发AI。
+                        this.lastAiBestMoveHandled = null;
+                        this.lastAiBoardApplied = null;
+                        this.checkAutoTriggerAI(data.current_fen);
+                    }
+                } else if (this.isGameRunning && data.event === 'unchanged' && data.stable) {
+                    // 即使没有 move 事件，如果 FEN 显示该轮到 AI 了，也要尝试触发
+                    this.checkAutoTriggerAI(data.current_fen || data.fen);
+                }
+            }
+        } catch (error) {
+            if (this.lastDynamicEvent !== 'network-error') {
+                this.log(`动态识别请求错误: ${error.message}`, 'error');
+                this.lastDynamicEvent = 'network-error';
+            }
+        } finally {
+            this.dynamicRecognizeBusy = false;
         }
     }
 
@@ -88,20 +472,32 @@ class ChessSimulation {
             return;
         }
         
-        this.networkCameraUrl = url;
         this.log(`正在连接网络摄像头: ${url}`, 'info');
-        
-        // 尝试加载网络摄像头画面
-        const img = document.getElementById('camera-feed');
-        img.src = url;
-        
-        img.onload = () => {
-            this.log('网络摄像头连接成功', 'info');
-        };
-        
-        img.onerror = () => {
-            this.log('网络摄像头连接失败，请检查URL', 'error');
-        };
+
+        try {
+            const response = await fetch(`${this.apiBase}/network_camera/connect`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url })
+            });
+            const data = await response.json();
+
+            if (data.success) {
+                this.networkCameraUrl = url;
+                this.currentInputSource = 'network';
+                const select = document.getElementById('input-source');
+                if (select) select.value = 'network';
+                this.log(`网络摄像头连接成功: ${data.source_label}`, 'info');
+                if (data.width && data.height) {
+                    this.log(`网络摄像头画面: ${data.width}x${data.height}`, 'info');
+                }
+                this.startLocalCameraStream();
+            } else {
+                this.log(`网络摄像头连接失败: ${data.error}`, 'error');
+            }
+        } catch (error) {
+            this.log(`网络摄像头连接错误: ${error.message}`, 'error');
+        }
     }
 
     // 处理本地图片上传
@@ -149,10 +545,38 @@ class ChessSimulation {
         }
     }
 
+    async checkRobotConnection() {
+        try {
+            const response = await fetch(`${this.apiBase}/robot/status`);
+            const data = await response.json();
+            const target = `${data.host || '192.168.0.102'}:${data.port || 8086}`;
+
+            if (data.status === 'not_probed') {
+                this.log(`STM32目标已配置：${target}，正式使用将通过 Homing 回传确认连接`, 'info');
+                return true;
+            }
+
+            if (response.ok && data.connected) {
+                this.log(`STM32连接确认成功：${target}`, 'info');
+                return true;
+            }
+
+            this.log(`STM32未连接：${target}${data.error ? `（${data.error}）` : ''}`, 'error');
+            return false;
+        } catch (error) {
+            this.log(`STM32连接检查失败：${error.message}`, 'error');
+            return false;
+        }
+    }
+
     // 检查摄像头状态
     async checkCameraStatus() {
+        if (!['camera', 'network'].includes(this.currentInputSource)) {
+            return;
+        }
+
         try {
-            const response = await fetch(`${this.apiBase}/camera/status`);
+            const response = await fetch(`${this.apiBase}/camera/status?${this.cameraFrameQuery()}`);
             const data = await response.json();
             
             if (data.success) {
@@ -170,7 +594,9 @@ class ChessSimulation {
     async startCamera() {
         try {
             const response = await fetch(`${this.apiBase}/camera/start`, {
-                method: 'POST'
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(this.cameraRequestPayload())
             });
             
             const data = await response.json();
@@ -212,18 +638,12 @@ class ChessSimulation {
             }
         }
         
-        // 如果是网络摄像头，已经通过URL加载
-        if (this.currentInputSource === 'network') {
-            this.log('使用网络摄像头画面', 'info');
-            return;
-        }
-        
-        // 本地摄像头模式
+        // 本地/网络摄像头模式
         try {
             const response = await fetch(`${this.apiBase}/capture`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ camera_index: 0 })
+                body: JSON.stringify(this.cameraRequestPayload())
             });
 
             const data = await response.json();
@@ -274,7 +694,10 @@ class ChessSimulation {
             const response = await fetch(`${this.apiBase}/recognize`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ image: imageData })
+                body: JSON.stringify({
+                    image: imageData,
+                    ...this.cameraRequestPayload()
+                })
             });
 
             const data = await response.json();
@@ -300,49 +723,106 @@ class ChessSimulation {
     }
 
     // 开始游戏
-    async startGame() {
-        this.log('开始新游戏...', 'info');
+    async startHardwareGame() {
+        return this.startGame('hardware');
+    }
+
+    async startSimulationGame() {
+        const simulationPayload = { mode: 'simulation' };
+        void simulationPayload;
+        return this.startGame('simulation');
+    }
+
+    async startGame(mode = 'hardware') {
+        this.aiColor = 'black';
+        this.playerColor = 'red';
+        this.firstPlayer = 'red';
+        document.getElementById('ai-color').value = this.aiColor;
+        document.getElementById('first-player').value = this.firstPlayer;
+
+        const isHardwareMode = mode === 'hardware';
+        const startButton = document.getElementById(
+            isHardwareMode ? 'btn-start-hardware-game' : 'btn-start-simulation-game'
+        );
+        startButton.disabled = true;
+        startButton.textContent = isHardwareMode ? '机械臂归零中...' : '启动模拟中...';
+
+        if (isHardwareMode) {
+            this.log('正在发送 Homing 指令：-17.1848,-55.6304,0,0,99', 'info');
+            this.log('等待 STM32 完成机械臂归零并回传 STATE:5...', 'info');
+        } else {
+            this.log('模拟测试模式：不连接 STM32，不发送 Homing 或走子指令', 'info');
+        }
         try {
             const response = await fetch(`${this.apiBase}/game/start`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
-                    use_recognized_board: this.boardState && Object.keys(this.boardState).length > 0,
-                    board_state: this.boardState
+                    use_recognized_board: false,
+                    board_state: {},
+                    ai_color: 'black',
+                    first_player: 'red',
+                    mode
                 })
             });
 
             const data = await response.json();
             
             if (data.success) {
-                this.log('游戏已开始 - 玩家执红先行，AI执黑后手', 'info');
-                document.getElementById('game-status').textContent = '轮到红方（玩家）';
-                document.getElementById('game-status').style.color = '#dc2626';
+                if (isHardwareMode) {
+                    this.log(`Homing 完成：${data.homing_response || 'STATE:5,RESULT:1'}`, 'info');
+                }
+                this.log(`开始新游戏：${isHardwareMode ? '正式使用' : '模拟测试'}，程序固定执黑方，红方先手`, 'info');
+                this.isGameRunning = true;
+                this.robotMode = data.robot_mode || mode;
+                this.aiColor = data.ai_color || this.aiColor;
+                this.playerColor = data.player_color || this.playerColor;
+                this.firstPlayer = data.first_player || this.firstPlayer;
                 this.moveHistory = [];
-                this.isPlayerTurn = true; // 玩家先手
+                this.lastAiBestMoveHandled = null;
+                this.lastAiBoardApplied = null;
+                this.isPlayerTurn = (data.current_turn || this.firstPlayer) === this.playerColor;
                 this.updateMoveList();
+                if (data.current_fen || data.fen) {
+                    document.getElementById('fen-display').value = data.current_fen || data.fen;
+                }
+                this.updateGameStatus();
                 
-                // 禁用识别按钮
-                this.setRecognizeButtonEnabled(false);
-                this.log('⛔ 已禁用识别按钮（游戏进行中不允许手动识别）', 'warning');
+                // 游戏中仍允许停止/继续摄像头走子识别；只锁定对局设置。
+                this.setRecognizeButtonEnabled(true);
+                this.setGameSettingControlsEnabled(false);
+                this.log('对局设置已锁定，开始监听红方走子', 'info');
                 
-                // 如果有识别的棋盘状态，使用它；否则使用标准布局
-                if (data.use_recognized_board && data.board_state) {
-                    this.log('🔄 使用识别的棋盘布局...', 'info');
+                // 每局固定从标准初始棋盘开始，摄像头只负责识别之后的走子变化。
+                if (data.board_state) {
                     this.boardState = data.board_state;
-                    this.log('✅ 识别布局已加载，棋子数量: ' + Object.keys(this.boardState).length, 'info');
+                    this.log('✅ 标准初始布局已加载，棋子数量: ' + Object.keys(this.boardState).length, 'info');
                 } else {
-                    this.log('🔄 初始化标准棋盘布局...', 'info');
                     this.initStandardBoard();
                 }
+                document.getElementById('piece-count').textContent = Object.keys(this.boardState).length;
+                this.drawVisualBoard();
                 
                 this.log('✅ 棋盘状态:', 'info');
                 this.log(JSON.stringify(this.boardState), 'info');
+                if (['camera', 'network'].includes(this.currentInputSource) && !this.dynamicRecognitionEnabled) {
+                    this.setRecognitionMode(true);
+                    this.startDynamicRecognition();
+                }
+                this.checkAutoTriggerAI(data.current_fen || data.fen);
             } else {
+                this.isGameRunning = false;
                 this.log(`开始失败: ${data.error}`, 'error');
+                if (data.homing_response) {
+                    this.log(`STM32回传: ${data.homing_response}`, 'error');
+                }
             }
         } catch (error) {
+            this.isGameRunning = false;
             this.log(`开始游戏错误: ${error.message}`, 'error');
+        } finally {
+            startButton.disabled = false;
+            startButton.textContent = isHardwareMode ? '正式使用（连接下位机）' : '模拟测试（无下位机）';
         }
     }
 
@@ -358,14 +838,29 @@ class ChessSimulation {
             
             if (data.success) {
                 this.log('游戏已重置', 'info');
+                if (this.robotResumeTimer) {
+                    clearTimeout(this.robotResumeTimer);
+                    this.robotResumeTimer = null;
+                }
+                this.stopDynamicRecognition();
+                this.setRecognitionMode(false);
                 document.getElementById('game-status').textContent = '等待开始';
                 document.getElementById('fen-display').value = '';
                 document.getElementById('piece-count').textContent = '0';
                 this.moveHistory = [];
+                this.lastAiBestMoveHandled = null;
+                this.lastAiBoardApplied = null;
+                this.isGameRunning = false;
+                this.aiColor = 'black';
+                this.playerColor = 'red';
+                this.firstPlayer = 'red';
+                document.getElementById('ai-color').value = this.aiColor;
+                document.getElementById('first-player').value = this.firstPlayer;
                 this.updateMoveList();
                 
                 // 重新启用识别按钮
                 this.setRecognizeButtonEnabled(true);
+                this.setGameSettingControlsEnabled(true);
                 this.log('✅ 已启用识别按钮', 'info');
             } else {
                 this.log(`重置失败: ${data.error}`, 'error');
@@ -377,64 +872,156 @@ class ChessSimulation {
 
     // 获取AI走法
     async getAIMove() {
-        if (this.isPlayerTurn) {
-            this.log('当前是红方回合，请玩家先走棋', 'warning');
-            return;
-        }
+        const aiColor = 'black';
+        this.aiColor = aiColor;
+        this.playerColor = 'red';
+        const depth = parseInt(document.getElementById('ai-depth').value) || 8;
+        this.log(`启动 AI 思考 (执色: ${aiColor === 'red' ? '红' : '黑'}, 深度: ${depth})...`, 'info');
         
-        this.log('AI正在思考...', 'info');
-        document.getElementById('game-status').textContent = 'AI思考中...';
-        
-        const depth = parseInt(document.getElementById('ai-depth').value) || 15;
-        const fen = document.getElementById('fen-display').value;
-
         try {
             const response = await fetch(`${this.apiBase}/ai_move`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ fen, depth })
+                body: JSON.stringify({ depth, ai_color: aiColor })
             });
 
             const data = await response.json();
             
             if (data.success) {
-                this.log(`AI走法: ${data.move}`, 'info');
-                this.moveHistory.push(data.move);
-                this.updateMoveList();
+                this.startAIStatusPolling();
+            } else {
+                this.log(`启动 AI 失败: ${data.error}`, 'error');
+            }
+        } catch (error) {
+            this.log(`获取 AI 走法错误: ${error.message}`, 'error');
+        }
+    }
+
+    syncAIMoveBoardFromStatus(data, bestMove) {
+        this.moveHistory = data.display_history || data.move_history || this.moveHistory;
+        this.updateMoveList();
+
+        if (data.current_fen) {
+            document.getElementById('fen-display').value = data.current_fen;
+        }
+
+        if (data.board_state) {
+            this.boardState = data.board_state;
+            document.getElementById('piece-count').textContent = data.piece_count || Object.keys(this.boardState).length;
+            this.drawVisualBoard();
+            this.drawBoard(this.boardState);
+        } else {
+            this.updateBoardFromUCIMove(bestMove, true);
+        }
+    }
+
+    aiMoveToken(data, bestMove) {
+        return data.analysis?.ai_move_token || `${(data.move_history || []).length}:${bestMove}`;
+    }
+
+    predisplayAIMoveFromStatus(data, bestMove) {
+        const moveToken = this.aiMoveToken(data, bestMove);
+        if (!data.analysis?.ai_move_applied || this.lastAiBoardApplied === moveToken) {
+            return false;
+        }
+
+        this.lastAiBoardApplied = moveToken;
+        this.syncAIMoveBoardFromStatus(data, bestMove);
+        this.isPlayerTurn = true;
+        this.updateGameStatus();
+
+        const serverPauseMs = Math.ceil((data.vision_pause_remaining || 0) * 1000);
+        const isHardwareMode = (data.robot_mode || this.robotMode) === 'hardware';
+        this.pauseForRobotMove(
+            Math.max(this.robotPauseMs, serverPauseMs),
+            { autoResume: !isHardwareMode }
+        );
+        this.log(`AI走法已预显示: ${bestMove}，等待${isHardwareMode ? '下位机 STATE:5,RESULT:1' : '模拟机械臂'}执行结果`, 'warning');
+        return true;
+    }
+
+    // 轮询 AI 思考状态
+    startAIStatusPolling() {
+        if (this.aiPollingTimer) return;
+        
+        const statusEl = document.getElementById('game-status');
+        statusEl.textContent = 'AI 正在思考...';
+        
+        this.aiPollingTimer = setInterval(async () => {
+            try {
+                const response = await fetch(`${this.apiBase}/ai_status`);
+                const data = await response.json();
                 
-                // 更新FEN显示
-                if (data.fen) {
-                    document.getElementById('fen-display').value = data.fen;
-                    this.log(`新FEN: ${data.fen}`, 'info');
-                }
+                if (!data.success) return;
                 
-                // 显示分析结果
+                // 更新分析面板
                 if (data.analysis) {
                     this.showAnalysis(data.analysis);
                 }
+
+                const bestMove = data.analysis?.best_move;
+                if (bestMove) {
+                    this.predisplayAIMoveFromStatus(data, bestMove);
+                }
                 
-                // 执行机械臂移动（传入AI返回的走法）
-                await this.executeRobotMove(data.move);
-                
-                // 更新回合状态
-                this.isPlayerTurn = data.is_player_turn || false;
-                this.updateGameStatus();
-                
-                document.getElementById('game-status').textContent = 'AI已走棋，轮到红方';
-            } else {
-                this.log(`AI走法失败: ${data.error}`, 'error');
-                document.getElementById('game-status').textContent = 'AI走法失败';
+                // 检查是否思考完成
+                if (!data.ai_thinking) {
+                    clearInterval(this.aiPollingTimer);
+                    this.aiPollingTimer = null;
+                    
+                    if (bestMove) {
+                        const isHardwareMode = (data.robot_mode || this.robotMode) === 'hardware';
+                        const moveToken = this.aiMoveToken(data, bestMove);
+                        const boardAlreadyApplied = this.lastAiBoardApplied === moveToken;
+                        if (this.lastAiBestMoveHandled === moveToken) {
+                            return;
+                        }
+                        this.lastAiBestMoveHandled = moveToken;
+                        this.log(`AI 思考完成，选择走法: ${bestMove}`, 'info');
+                        const robotMessages = data.analysis.robot_log_messages || [];
+                        robotMessages.forEach((message) => {
+                            const type = message.includes('失败') ? 'error' : (message.includes('未收到') ? 'warning' : 'info');
+                            this.log(message, type);
+                        });
+
+                        if (!boardAlreadyApplied) {
+                            this.lastAiBoardApplied = moveToken;
+                            this.syncAIMoveBoardFromStatus(data, bestMove);
+                            this.pauseForRobotMove(this.robotPauseMs, { autoResume: !isHardwareMode });
+                        }
+
+                        if (data.analysis.robot_send_success === false) {
+                            this.log(`机器人执行失败：${data.analysis.robot_send_error || '未收到下位机完成回传'}`, 'error');
+                            this.isPlayerTurn = false;
+                            this.updateGameStatus();
+                            return;
+                        }
+                        
+                        // 切换回玩家回合
+                        this.isPlayerTurn = true;
+                        this.updateGameStatus();
+                        if (isHardwareMode && data.analysis.robot_send_success === true && data.analysis.robot_send_acknowledged !== false) {
+                            this.resumeRecognitionAfterRobotAck(true);
+                        }
+                    } else {
+                        this.log('AI 未能给出有效走法', 'error');
+                        this.isPlayerTurn = false;
+                        this.updateGameStatus();
+                    }
+                }
+            } catch (error) {
+                this.log(`获取 AI 状态失败: ${error.message}`, 'error');
+                clearInterval(this.aiPollingTimer);
+                this.aiPollingTimer = null;
             }
-        } catch (error) {
-            this.log(`获取AI走法错误: ${error.message}`, 'error');
-            document.getElementById('game-status').textContent = '错误';
-        }
+        }, 250);
     }
 
     // 执行机械臂移动
     async executeRobotMove(move) {
         this.log(`机械臂执行AI走法: ${move}`, 'info');
-        document.getElementById('robot-state').textContent = '移动中...';
+        const robotState = document.getElementById('robot-state');
+        if (robotState) robotState.textContent = '移动中...';
         
         try {
             const response = await fetch(`${this.apiBase}/simulate_robot`, {
@@ -447,7 +1034,7 @@ class ChessSimulation {
             
             if (data.success) {
                 this.log('机械臂移动完成', 'info');
-                document.getElementById('robot-state').textContent = '空闲';
+                if (robotState) robotState.textContent = '空闲';
                 
                 // 解析UCI走法并更新可视化棋盘
                 this.updateBoardFromUCIMove(move, true);  // AI走法
@@ -455,11 +1042,11 @@ class ChessSimulation {
                 this.animateRobotMove(move);
             } else {
                 this.log(`移动失败: ${data.error}`, 'error');
-                document.getElementById('robot-state').textContent = '错误';
+                if (robotState) robotState.textContent = '错误';
             }
         } catch (error) {
             this.log(`机械臂移动错误: ${error.message}`, 'error');
-            document.getElementById('robot-state').textContent = '错误';
+            if (robotState) robotState.textContent = '错误';
         }
     }
 
@@ -543,14 +1130,6 @@ class ChessSimulation {
             return;
         }
         
-        // 检查是否是AI走了玩家的棋子（红方大写）
-        if (isAIMove && piece === piece.toUpperCase() && piece !== 'K') {  // 大写=红方，且不是帅
-            this.log(`🚨 AI错误：AI操控了红方棋子 ${piece}！`, 'error');
-            this.log(`💀 游戏结束！AI失控，你输了！`, 'error');
-            alert('AI出现严重错误，操控了你的棋子！\n\n你输了！');
-            return;
-        }
-            
         // 执行移动
         delete this.boardState[fromKey];
         this.boardState[toKey] = piece;
@@ -573,12 +1152,13 @@ class ChessSimulation {
     // 测试机械臂序列
     async testRobotSequence() {
         this.log('执行机械臂测试序列...', 'info');
-        document.getElementById('robot-state').textContent = '测试中...';
+        const robotState = document.getElementById('robot-state');
+        if (robotState) robotState.textContent = '测试中...';
         
         // 简单模拟
         setTimeout(() => {
             this.log('测试序列完成', 'info');
-            document.getElementById('robot-state').textContent = '空闲';
+            if (robotState) robotState.textContent = '空闲';
             this.drawRobotVisualization();
         }, 2000);
     }
@@ -660,6 +1240,7 @@ class ChessSimulation {
     // 绘制机械臂可视化
     drawRobotVisualization() {
         const canvas = document.getElementById('robot-canvas');
+        if (!canvas) return;
         const ctx = canvas.getContext('2d');
         
         ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -892,7 +1473,7 @@ class ChessSimulation {
                 this.log(`玩家走法已确认: ${uciMove}`, 'info');
                 
                 // 添加到走法历史
-                this.moveHistory.push(uciMove);
+                this.moveHistory = data.display_history || [...this.moveHistory, `红方 ${uciMove}`];
                 this.updateMoveList();
                 
                 // 更新FEN显示
@@ -911,7 +1492,9 @@ class ChessSimulation {
                 // 解析UCI走法并更新可视化棋盘（玩家走棋不需要机械臂）
                 this.updateBoardFromUCIMove(uciMove, false);  // 玩家走法
                 
-                this.log('已轮到AI思考，请点击"获取AI走法"', 'info');
+                this.lastAiBestMoveHandled = null;
+                this.lastAiBoardApplied = null;
+                this.checkAutoTriggerAI(data.fen);
             } else {
                 this.log(`走法失败: ${data.error}`, 'error');
                 // 恢复选择状态
@@ -926,13 +1509,18 @@ class ChessSimulation {
     // 更新游戏状态显示
     updateGameStatus() {
         const statusEl = document.getElementById('game-status');
-        if (this.isPlayerTurn) {
-            statusEl.textContent = '轮到红方（玩家）';
-            statusEl.style.color = '#dc2626';
-        } else {
-            statusEl.textContent = '轮到黑方（AI）';
-            statusEl.style.color = '#1f2937';
-        }
+        const turnColor = this.isPlayerTurn ? this.playerColor : this.aiColor;
+        const owner = this.isPlayerTurn ? '玩家' : '程序';
+        statusEl.textContent = `轮到${this.colorName(turnColor)}（${owner}）`;
+        statusEl.style.color = turnColor === 'red' ? '#dc2626' : '#1f2937';
+    }
+
+    updateGameStatusFromTurn(turnColor) {
+        this.isPlayerTurn = turnColor === this.playerColor;
+        const statusEl = document.getElementById('game-status');
+        const owner = this.isPlayerTurn ? '玩家' : '程序';
+        statusEl.textContent = `轮到${this.colorName(turnColor)}（${owner}）`;
+        statusEl.style.color = turnColor === 'red' ? '#dc2626' : '#1f2937';
     }
 
     // 初始化标准棋盘布局
@@ -979,20 +1567,58 @@ class ChessSimulation {
         }
     }
 
+    // 检查是否需要自动触发 AI
+    checkAutoTriggerAI(fen) {
+        if (!this.isGameRunning || !fen || this.aiPollingTimer) return;
+        
+        const turnColor = this.currentTurnFromFen(fen);
+        const aiColor = this.aiColor || document.getElementById('ai-color').value;
+        
+        // 更新 UI 上的回合显示
+        this.updateGameStatusFromTurn(turnColor);
+        
+        if (turnColor === aiColor) {
+            this.log(`检测到当前是 ${this.colorName(aiColor)}（程序）回合，自动开始思考...`, 'info');
+            this.getAIMove();
+        }
+    }
+
     // 日志输出
+    toggleLogPause() {
+        this.logPaused = !this.logPaused;
+        const btn = document.getElementById('btn-toggle-log-pause');
+        if (btn) {
+            btn.textContent = this.logPaused ? '恢复日志' : '暂停日志';
+            btn.classList.toggle('btn-warning', this.logPaused);
+            btn.classList.toggle('btn-secondary', !this.logPaused);
+        }
+
+        if (!this.logPaused) {
+            const skipped = this.pausedLogCount;
+            this.pausedLogCount = 0;
+            if (skipped > 0) {
+                this.log(`日志已恢复，暂停期间省略 ${skipped} 条页面日志`, 'warning');
+            }
+        }
+    }
+
     log(message, type = 'info') {
+        console.log(`[${type.toUpperCase()}] ${message}`);
+
+        if (this.logPaused) {
+            this.pausedLogCount += 1;
+            return;
+        }
+
         const logOutput = document.getElementById('log-output');
         const time = new Date().toLocaleTimeString('zh-CN');
-        
+
         const entry = document.createElement('div');
         entry.className = `log-entry log-${type}`;
         entry.innerHTML = `<span class="log-time">[${time}]</span>${message}`;
-        
+
         logOutput.appendChild(entry);
         logOutput.scrollTop = logOutput.scrollHeight;
-        
-        // 同时输出到控制台
-        console.log(`[${type.toUpperCase()}] ${message}`);
     }
 }
 
