@@ -64,58 +64,184 @@ TCP 发送至 STM32 下位机执行
 
 ## 快速开始
 
-### 1. 环境准备
+本节按“说明书”方式描述一次完整部署。默认主控电脑运行 Web 后端、视觉识别和 Pikafish；香橙派/树莓派只作为网络摄像头控制板，且默认控制板可以访问 Internet。
+
+### 1. 下载代码包
+
+#### 方式 A：Git 克隆（推荐）
+
+在主控电脑上执行：
 
 ```bash
-# 克隆项目
-git clone <repository-url>
-cd chch-robot
-
-# 安装 Python 依赖
-pip install -r requirements.txt
+git clone https://github.com/hengrui900-cloud/Chinese-Robot.git
+cd Chinese-Robot
 ```
 
-### 2. 下载 Pikafish 引擎
+如果已经克隆过，更新到最新版：
 
-从 [Pikafish 官方发布页](https://github.com/official-pikafish/Pikafish/releases) 下载对应平台的引擎文件，解压到 `./Pikafish/` 目录。
+```bash
+cd Chinese-Robot
+git pull
+```
 
-默认使用 `pikafish-avx2.exe`（Windows）。
+#### 方式 B：下载 ZIP
 
-### 3. 配置系统
+也可以在 GitHub 页面点击 `Code -> Download ZIP`，解压后进入项目根目录。后续命令都默认在 `Chinese-Robot/` 根目录下执行。
 
-编辑 `config.py` 修改以下关键配置：
+### 2. 安装依赖
+
+建议使用 Python 3.10 或 3.11。Windows 示例：
+
+```powershell
+cd Chinese-Robot
+python -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+Linux 示例：
+
+```bash
+cd Chinese-Robot
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+如果没有 NVIDIA GPU 或 `onnxruntime-gpu` 安装失败，可以将 `requirements.txt` 中的 `onnxruntime-gpu` 临时改为 `onnxruntime` 后重新安装。
+
+### 3. 下载 Pikafish 引擎
+
+从 [Pikafish 官方发布页](https://github.com/official-pikafish/Pikafish/releases) 下载对应平台的引擎文件，解压到项目根目录的 `Pikafish/` 文件夹。
+
+Windows 默认配置：
+
+```text
+Chinese-Robot/
+└── Pikafish/
+    └── pikafish-avx2.exe
+```
+
+如文件名或路径不同，请修改 `config.py`：
 
 ```python
-# 摄像头
-CAMERA_INDEX = 1                          # USB 摄像头索引
-USE_IP_CAMERA = True                      # 是否使用网络摄像头
-IP_CAMERA_URL = "http://192.168.0.101:8080/?action=stream"
-
-# AI 引擎
 ENGINE_PATH = "./Pikafish/pikafish-avx2.exe"
-ENGINE_DEPTH = 15                         # 搜索深度
-
-# 机械臂网络
-ROBOT_NETWORK_HOST = "192.168.0.102"      # STM32 下位机 IP
-ROBOT_NETWORK_PORT = 8086                 # TCP 端口
+ENGINE_DEPTH = 15
 ```
 
-### 4. 启动系统
+### 4. 香橙派/树莓派创建摄像头服务器并生成 URL
 
-#### Web 管理界面（推荐）
+主控电脑可以直接使用 USB 摄像头；如果摄像头插在香橙派或树莓派上，则需要先在控制板上启动摄像头服务器，再把生成的 URL 输入到 Web 页面。
+
+#### 推荐方案：HTTP MJPEG 摄像头服务
+
+这个方案生成 `http://<控制板IP>:8080`，可直接填入 Web 页面的“网络摄像头”输入框。香橙派和树莓派都可以先按这套方式尝试。
+
+在香橙派/树莓派上执行：
+
+```bash
+sudo apt update
+sudo apt install -y git python3 python3-pip v4l-utils
+
+git clone --depth 1 https://github.com/hengrui900-cloud/Chinese-Robot.git
+cd Chinese-Robot/raspberry_pi_zero2w_usb_camera_offline
+
+bash start_usb_camera_server.sh
+```
+
+另开一个 SSH 终端查看控制板 IP：
+
+```bash
+hostname -I
+```
+
+假设输出的 IP 是 `192.168.1.24`，则摄像头 URL 为：
+
+```text
+http://192.168.1.24:8080
+```
+
+浏览器也可以先打开预览页确认画面：
+
+```text
+http://192.168.1.24:8080/
+```
+
+手动启动确认正常后，可以设置开机自启：
+
+```bash
+cd ~/Chinese-Robot/raspberry_pi_zero2w_usb_camera_offline
+bash install_service.sh
+systemctl status chro-usb-camera --no-pager
+```
+
+查看服务日志：
+
+```bash
+journalctl -u chro-usb-camera -f
+```
+
+#### 香橙派旧版 WebSocket 服务
+
+项目也保留了香橙派 WebSocket 摄像头服务，会生成 `ws://<香橙派IP>:8765`。它主要用于 `orange-pi-camera/test_network_camera.py` 和 `vision/network_camera.py` 这一套客户端流程；Web 页面默认更推荐输入上面的 HTTP URL。
+
+在香橙派上执行：
+
+```bash
+sudo apt update
+sudo apt install -y git python3 python3-pip python3-opencv
+
+git clone --depth 1 https://github.com/hengrui900-cloud/Chinese-Robot.git
+cd Chinese-Robot/orange-pi-camera
+
+python3 -m pip install -r requirements.txt
+bash start_server.sh
+```
+
+启动脚本会打印类似：
+
+```text
+WebSocket地址: ws://192.168.1.100:8765
+```
+
+### 5. 运行指南
+
+#### 启动 Web 系统（推荐）
+
+在主控电脑的项目根目录执行：
 
 ```bash
 python web_simulation/app.py
 ```
 
-浏览器访问 `http://localhost:5000`，支持：
-- 摄像头实时预览和画面捕获
-- 棋盘状态识别和 FEN 显示
-- AI 走棋（异步思考，实时显示分析进度）
-- 机械臂状态监控（hardware/simulation 模式切换）
-- 游戏管理（开始、重置、走法历史）
+启动时终端会询问是否修改棋盘横向/纵向格距、楚河汉界间距和下位机 IP。正式使用机械臂时，按实际下位机地址填写；只做网页模拟时可以直接回车使用默认值。
 
-启动时可在终端修改棋盘格距和下位机 IP 参数。
+如果希望跳过启动询问：
+
+```powershell
+$env:CHRO_SKIP_STARTUP_PROMPT="1"
+python web_simulation/app.py
+```
+
+Linux/macOS：
+
+```bash
+CHRO_SKIP_STARTUP_PROMPT=1 python web_simulation/app.py
+```
+
+启动成功后，主控电脑浏览器打开：
+
+```text
+http://127.0.0.1:5000
+```
+
+同一局域网其他设备访问时，把 `127.0.0.1` 换成主控电脑 IP：
+
+```text
+http://<主控电脑IP>:5000
+```
 
 #### 命令行模式
 
@@ -123,25 +249,98 @@ python web_simulation/app.py
 python main.py
 ```
 
-交互式命令：
-- `start` — 开始游戏
-- `calibrate` — 校准系统
-- `demo` — 运行演示
-- `test_camera` — 测试摄像头
-- `test_engine` — 测试 AI 引擎
-
-#### 命令行参数
+常用测试命令：
 
 ```bash
 python main.py --demo           # 演示模式
 python main.py --test-camera    # 测试摄像头
-python main.py --test-engine    # 测试 AI 引擎
+python main.py --test-engine    # 测试 Pikafish 引擎
 ```
+
+### 6. 网页介绍
+
+Web 页面是项目的主要操作台，分为三类区域：
+
+#### 左侧：对局控制与输入源
+
+- `正式使用（连接下位机）`：连接 STM32/机械臂，AI 走法会转换成机械臂 TCP 指令。
+- `模拟测试（无下位机）`：不连接真实机械臂，只在网页中模拟走棋流程，适合调试视觉识别和 AI。
+- `重置游戏`：清空当前局面和走法历史。
+- `程序执色`：默认程序执黑，玩家执红。
+- `搜索深度`：控制 Pikafish 思考深度，数值越大思考越慢但质量更高。
+
+#### 画面输入
+
+在 `画面输入 -> 输入源` 中选择：
+
+- `USB 摄像头`：摄像头直接插在主控电脑上。
+- `网络摄像头`：摄像头插在香橙派/树莓派上，通过 URL 取流。
+- `本地图片`：上传单张棋盘图片进行静态识别。
+
+使用网络摄像头时：
+
+1. 选择 `网络摄像头`。
+2. 在弹出的输入框中输入控制板生成的 URL，例如：
+
+```text
+http://192.168.1.24:8080
+```
+
+3. 点击 `连接`。
+4. 看到真实画面后，再点击 `模拟测试（无下位机）` 或 `正式使用（连接下位机）`。
+
+#### 中间：真实画面与虚拟棋盘
+
+- `真实画面`：显示摄像头画面，并叠加棋盘识别结果。
+- `虚拟识别画面`：把识别到的棋子同步成网页棋盘。
+- `FEN`：后端内部会将识别状态转换成中国象棋 FEN，供 Pikafish 分析。
+
+#### 右侧：走法历史、AI 分析、系统日志
+
+- `走法历史`：记录玩家和 AI 的 UCI 走法。
+- `AI 分析`：显示 Pikafish 当前推荐走法、分数、深度和主变。
+- `系统日志`：显示摄像头连接、动态识别、AI 思考、机械臂执行和错误信息。
+
+### 7. 典型使用流程
+
+#### 只做网页模拟
+
+1. 启动 `python web_simulation/app.py`。
+2. 打开 `http://127.0.0.1:5000`。
+3. 选择 USB 摄像头、网络摄像头或本地图片。
+4. 如果是网络摄像头，在输入框填入 `http://<控制板IP>:8080` 并点击 `连接`。
+5. 点击 `模拟测试（无下位机）`。
+6. 摆好棋盘后，系统进入动态识别；玩家走红棋，系统识别走法后自动触发 AI。
+
+#### 连接真实机械臂
+
+1. 确认 STM32 下位机已经上电，并在局域网内监听 TCP `8086`。
+2. 启动 Web 后端时填写下位机 IP，或在 `config.py` 中修改：
+
+```python
+ROBOT_NETWORK_HOST = "192.168.0.102"
+ROBOT_NETWORK_PORT = 8086
+```
+
+3. 打开网页并连接摄像头。
+4. 点击 `正式使用（连接下位机）`。
+5. 系统会先发送 Homing 归位指令，收到下位机确认后进入正式对弈。
+6. 玩家走棋后，视觉模块检测走法；AI 思考后，机械臂执行 AI 走法。
+
+### 8. 其他说明
+
+- 主控电脑、香橙派/树莓派、STM32 下位机需要在同一局域网。
+- 网络摄像头 URL 优先使用 `http://<控制板IP>:8080`；如果直接填 `/stream.mjpg` 也可以，但根地址更方便后端自动选择 `/snapshot.jpg` 或 `/stream.mjpg`。
+- 树莓派 Zero 2 W 性能有限，推荐 `640x480`、`8 fps`，清晰稳定比高帧率更重要。
+- 真实棋盘使用前应固定相机位置、光照和棋盘位置，避免识别基线频繁变化。
+- 模型文件位于 `model/`，Pikafish 引擎不随仓库自动安装，需要单独下载。
+- 日志文件默认为 `chchess.log`，遇到摄像头、AI 或机械臂问题时优先查看终端日志和该文件。
+- 本项目面向可信局域网使用，摄像头服务和 Web 服务不要直接暴露到公网。
 
 ## 项目结构
 
 ```
-chch-robot/
+Chinese-Robot/
 ├── main.py                     # 命令行入口
 ├── game_manager.py             # 游戏流程管理器
 ├── config.py                   # 全局配置
@@ -292,21 +491,17 @@ startX, startY, endX, endY, signal
 
 ## 网络摄像头部署
 
-### Orange Pi
+快速部署流程见上文“快速开始 -> 香橙派/树莓派创建摄像头服务器并生成 URL”。
 
-```bash
-cd orange-pi-camera
-python camera_server.py
-```
+常用 URL：
 
-### Raspberry Pi Zero 2W
+- Web 页面推荐输入：`http://<控制板IP>:8080`
+- HTTP 预览页：`http://<控制板IP>:8080/`
+- MJPEG 流地址：`http://<控制板IP>:8080/stream.mjpg`
+- 单帧快照地址：`http://<控制板IP>:8080/snapshot.jpg`
+- 香橙派旧版 WebSocket 地址：`ws://<香橙派IP>:8765`
 
-```bash
-cd raspberry_pi_zero2w_usb_camera_offline
-python usb_mjpeg_server.py
-```
-
-配置 `config.py` 中的 `IP_CAMERA_URL` 指向摄像头服务地址。
+更详细的树莓派说明见 `docs/raspberry_pi_zero2w_camera.md` 和 `raspberry_pi_zero2w_usb_camera_offline/README_FIRST.md`。
 
 ## 运行测试
 
